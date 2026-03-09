@@ -32,6 +32,11 @@ venv/bin/pip freeze > requirements.txt
 - 60-second async timeout with `proc.kill()` on expiry
 - All user strings pass through `_sanitize_for_applescript()` before embedding
 
+**Search strategy (`mail_search_emails`):**
+- Uses Mail's native `search <mailbox> for <keyword>` command (backed by Mail's internal Spotlight index) — do NOT revert to brute-force message iteration
+- Trash, Deleted Messages, Junk, Spam, Bulk Mail, Junk E-mail are skipped by default when no `mailbox_name` filter is set
+- Optional `account` and `mailbox_name` parameters scope the search; both are sanitised before embedding
+
 **Email references:** opaque base64url-encoded JSON blobs `{"a": account, "m": mailbox, "i": message_id}`. Never expose raw Apple Mail message IDs to callers.
 
 **Delimiters used inside AppleScript output:**
@@ -54,7 +59,7 @@ This prevents AppleScript injection. Never bypass or remove these steps.
 | Tool | Input model | What it does |
 |------|-------------|--------------|
 | `mail_list_mailboxes` | `ListMailboxesInput` | Lists all accounts and mailboxes |
-| `mail_search_emails` | `SearchEmailsInput` | Keyword search across subject + sender |
+| `mail_search_emails` | `SearchEmailsInput` | Indexed keyword search; optional `account` and `mailbox_name` filters |
 | `mail_read_email` | `ReadEmailInput` | Reads full email by opaque `email_id` |
 
 All tools are annotated `readOnlyHint=True`, `destructiveHint=False`.
@@ -75,7 +80,7 @@ Semantic versioning: `MAJOR.MINOR.PATCH`
 - **MINOR** — new tool or non-breaking feature
 - **PATCH** — bug fix or security hardening
 
-Update `VERSION = "x.y.z"` in `apple_mail_mcp.py` and add a changelog entry in `README.md` for every release.
+Update `VERSION = "x.y.z"` in `apple_mail_mcp.py`, add a changelog entry in `README.md`, and update `CLAUDE.md` to reflect any architectural or tool changes — all in the same commit.
 
 ## Git workflow
 
