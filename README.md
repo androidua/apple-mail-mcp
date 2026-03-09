@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.0.0**
+Current: **1.1.0**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -16,7 +16,7 @@ Versioning follows [Semantic Versioning](https://semver.org/):
 | Tool | Description |
 |------|-------------|
 | `mail_list_mailboxes` | List every account and mailbox configured in Apple Mail |
-| `mail_search_emails` | Search emails by keyword (subject + sender) across all mailboxes |
+| `mail_search_emails` | Search emails by keyword across all mailboxes (uses Mail's native search index); optional `account` and `mailbox_name` filters for scoped searches |
 | `mail_read_email` | Read the full content of a specific email by its opaque ID |
 
 ## What it will never do
@@ -102,7 +102,9 @@ Once connected, you can ask Claude things like:
 
 ## Performance
 
-The `mail_search_emails` tool iterates through messages in every mailbox. For very large mailboxes this may take several seconds. Use the `limit` parameter (default 20, max 100) to keep searches fast.
+`mail_search_emails` uses Apple Mail's native indexed search (`search <mailbox> for <keyword>`), which is backed by Mail's internal Spotlight index. This makes searches fast even on accounts with hundreds of thousands of messages. System mailboxes (Trash, Junk, Spam) are skipped by default.
+
+To further scope a search, pass the optional `account` and/or `mailbox_name` parameters — e.g. restrict to `account="Yahoo"` and `mailbox_name="INBOX"` to avoid scanning all accounts.
 
 ## Troubleshooting
 
@@ -110,7 +112,7 @@ The `mail_search_emails` tool iterates through messages in every mailbox. For ve
 |---------|-----|
 | `AppleScript failed … not allowed to send Apple events` | Go to **System Settings → Privacy & Security → Automation** and enable Mail for your Python process. |
 | `No mailboxes found` | Open Apple Mail and ensure at least one account is signed in. |
-| Tool times out | Reduce `limit` or search a less-populated mailbox. |
+| Tool times out | Use `account` and/or `mailbox_name` to scope the search, or reduce `limit`. |
 | `Invalid email_id` | Always pass the `email_id` back exactly as returned by `mail_search_emails`. |
 
 ## Project structure
@@ -124,6 +126,16 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.1.0 — 2026-03-09
+- **Performance:** `mail_search_emails` now uses Apple Mail's native indexed
+  search (`search <mailbox> for <keyword>`) instead of brute-force message
+  iteration — dramatically faster on large mailboxes (e.g. Yahoo with 20+ years
+  of email)
+- **Feature:** added optional `account` and `mailbox_name` parameters to
+  `mail_search_emails` for scoped searches (e.g. search only Yahoo / INBOX)
+- **Default exclusion:** Trash, Deleted Messages, Junk, Spam, Bulk Mail are
+  skipped automatically unless explicitly targeted via `mailbox_name`
 
 ### 1.0.0 — 2026-03-09
 - Initial release

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.0.0
+Apple Mail MCP Server  v1.1.0
 ==============================
 
 CAN DO:
@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -174,11 +174,25 @@ end tell
 """
 
 
-def _script_search_emails(keyword_safe: str, limit: int) -> str:
+def _script_search_emails(
+    keyword_safe: str,
+    limit: int,
+    account_safe: str = "",
+    mailbox_safe: str = "",
+) -> str:
     """Build the AppleScript for searching emails.
 
-    *keyword_safe* must already have been processed by ``_sanitize_for_applescript``.
-    Python f-string: ``{{}}`` → ``{}`` (empty AppleScript list literal).
+    Uses Mail's native indexed ``search <mailbox> for <keyword>`` command instead
+    of iterating all messages, making it dramatically faster on large mailboxes.
+
+    *keyword_safe*, *account_safe*, and *mailbox_safe* must already have been
+    processed by ``_sanitize_for_applescript``.
+
+    When *mailbox_safe* is empty, system mailboxes (Trash, Junk, etc.) are
+    excluded automatically. When a specific *mailbox_safe* is given, that
+    exclusion is skipped so the user can explicitly search Trash if desired.
+
+    Python f-string: ``{{}}`` → ``{}``  (empty AppleScript list literal).
     """
     return f"""\
 tell application "Mail"
@@ -186,32 +200,44 @@ tell application "Mail"
     set rs to (ASCII character 30)
     set kw to "{keyword_safe}"
     set maxResults to {limit}
+    set filterAccount to "{account_safe}"
+    set filterMailbox to "{mailbox_safe}"
+    set skipNames to {{"Trash", "Deleted Messages", "Junk", "Spam", "Bulk Mail", "Junk E-mail"}}
     set rows to {{}}
     set resultCount to 0
     repeat with anAccount in every account
         if resultCount >= maxResults then exit repeat
         set acctName to name of anAccount
-        repeat with aMailbox in every mailbox of anAccount
-            if resultCount >= maxResults then exit repeat
-            try
-                set allMsgs to messages of aMailbox
-                repeat with aMsg in allMsgs
-                    if resultCount >= maxResults then exit repeat
+        if filterAccount is "" or acctName is filterAccount then
+            repeat with aMailbox in every mailbox of anAccount
+                if resultCount >= maxResults then exit repeat
+                set mbxName to name of aMailbox
+                set shouldSkip to false
+                if filterMailbox is not "" then
+                    if mbxName is not filterMailbox then set shouldSkip to true
+                else
+                    if skipNames contains mbxName then set shouldSkip to true
+                end if
+                if not shouldSkip then
                     try
-                        set msgSubj to subject of aMsg
-                        set msgFrom to sender of aMsg
-                        if (msgSubj contains kw) or (msgFrom contains kw) then
-                            set msgId to message id of aMsg
-                            set msgDate to (date received of aMsg) as string
-                            set isReadStr to "false"
-                            if read status of aMsg then set isReadStr to "true"
-                            set end of rows to acctName & fs & (name of aMailbox) & fs & msgId & fs & msgSubj & fs & msgFrom & fs & msgDate & fs & isReadStr
-                            set resultCount to resultCount + 1
-                        end if
+                        set matchedMsgs to search aMailbox for kw
+                        repeat with aMsg in matchedMsgs
+                            if resultCount >= maxResults then exit repeat
+                            try
+                                set msgId to message id of aMsg
+                                set msgSubj to subject of aMsg
+                                set msgFrom to sender of aMsg
+                                set msgDate to (date received of aMsg) as string
+                                set isReadStr to "false"
+                                if read status of aMsg then set isReadStr to "true"
+                                set end of rows to acctName & fs & mbxName & fs & msgId & fs & msgSubj & fs & msgFrom & fs & msgDate & fs & isReadStr
+                                set resultCount to resultCount + 1
+                            end try
+                        end repeat
                     end try
-                end repeat
-            end try
-        end repeat
+                end if
+            end repeat
+        end if
     end repeat
     if (count of rows) is 0 then return ""
     set AppleScript's text item delimiters to rs
@@ -326,6 +352,25 @@ class SearchEmailsInput(BaseModel):
         description="Maximum number of results to return (1–100). Default: 20.",
         ge=1,
         le=100,
+    )
+    account: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict the search to this account name only "
+            "(e.g. 'iCloud', 'Yahoo'). "
+            "Omit to search across all accounts."
+        ),
+        max_length=200,
+    )
+    mailbox_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict the search to this mailbox name only "
+            "(e.g. 'INBOX', 'Sent Messages'). "
+            "Omit to search all non-system mailboxes. "
+            "Use with 'account' to target a specific mailbox precisely."
+        ),
+        max_length=200,
     )
     response_format: str = Field(
         default="markdown",
@@ -469,19 +514,19 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
 async def mail_search_emails(params: SearchEmailsInput) -> str:
     """Search Apple Mail for emails whose subject or sender matches a keyword.
 
-    Searches across all configured accounts and all mailboxes. The keyword is
-    matched case-insensitively against the Subject and From (sender) fields.
+    Searches across all configured accounts and all mailboxes using Apple
+    Mail's native indexed search, which is fast even on mailboxes with
+    hundreds of thousands of messages. System mailboxes (Trash, Junk, Spam)
+    are excluded by default unless explicitly targeted via mailbox_name.
     Returns matching emails with opaque email_id values that can be passed to
     mail_read_email to retrieve the full message content.
-
-    Performance note: the search iterates through messages in every mailbox.
-    Use the limit parameter (default 20, max 100) to cap results. For very
-    large mailboxes the first call may take several seconds.
 
     Args:
         params (SearchEmailsInput): Input containing:
             - keyword (str): Search term (1–200 chars). Required.
             - limit (int): Max results to return (default 20, max 100).
+            - account (str): Optional. Restrict to one account (e.g. 'Yahoo').
+            - mailbox_name (str): Optional. Restrict to one mailbox (e.g. 'INBOX').
             - response_format (str): 'markdown' (default) or 'json'.
 
     Returns:
@@ -515,6 +560,7 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
     Examples:
         - Use when: "Find emails from Alice" → keyword="Alice"
         - Use when: "Search for invoice emails, top 5" → keyword="invoice", limit=5
+        - Use when: "Search only Yahoo INBOX" → account="Yahoo", mailbox_name="INBOX"
         - Don't use when: You already have an email_id (use mail_read_email).
 
     Error Handling:
@@ -522,8 +568,10 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         - Returns a "No emails found" message if there are no matches.
         - Pydantic validates all inputs before any AppleScript runs.
     """
-    keyword_safe = _sanitize_for_applescript(params.keyword)
-    script = _script_search_emails(keyword_safe, params.limit)
+    keyword_safe  = _sanitize_for_applescript(params.keyword)
+    account_safe  = _sanitize_for_applescript(params.account or "")
+    mailbox_safe  = _sanitize_for_applescript(params.mailbox_name or "")
+    script = _script_search_emails(keyword_safe, params.limit, account_safe, mailbox_safe)
 
     try:
         raw = await _run_applescript(script)
