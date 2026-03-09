@@ -1,4 +1,4 @@
-# Apple Mail MCP Server
+# Apple Mail MCP Server (READ ONLY)
 
 A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude Desktop interact with Apple Mail on macOS. Uses AppleScript via `subprocess` — no third-party email libraries, no network calls.
 
