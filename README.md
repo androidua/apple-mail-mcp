@@ -127,6 +127,11 @@ apple-mail-mcp/
 
 ## Changelog
 
+### 1.1.1 — 2026-03-09
+- **Fix:** replaced `search <mailbox> for <keyword>` AppleScript command with a
+  `whose` clause filter — the `search` command was removed in Mail 16 (macOS 26)
+  and caused all `mail_search_emails` calls to fail with an AppleScript syntax error
+
 ### 1.1.0 — 2026-03-09
 - **Performance:** `mail_search_emails` now uses Apple Mail's native indexed
   search (`search <mailbox> for <keyword>`) instead of brute-force message

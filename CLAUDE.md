@@ -33,7 +33,9 @@ venv/bin/pip freeze > requirements.txt
 - All user strings pass through `_sanitize_for_applescript()` before embedding
 
 **Search strategy (`mail_search_emails`):**
-- Uses Mail's native `search <mailbox> for <keyword>` command (backed by Mail's internal Spotlight index) — do NOT revert to brute-force message iteration
+- Uses AppleScript's `whose` clause: `(messages of aMailbox whose subject contains kw or sender contains kw)`
+- The `whose` predicate is evaluated server-side by Mail's Objective-C runtime — it is a declarative filter, not a Python-level iteration
+- **Why `whose` instead of `search`:** Mail 16 (macOS 26) removed the `search <mailbox> for <keyword>` command from its AppleScript dictionary. The `whose` clause is the correct replacement.
 - Trash, Deleted Messages, Junk, Spam, Bulk Mail, Junk E-mail are skipped by default when no `mailbox_name` filter is set
 - Optional `account` and `mailbox_name` parameters scope the search; both are sanitised before embedding
 

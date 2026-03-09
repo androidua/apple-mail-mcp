@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.1.0
+Apple Mail MCP Server  v1.1.1
 ==============================
 
 CAN DO:
@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -182,8 +182,14 @@ def _script_search_emails(
 ) -> str:
     """Build the AppleScript for searching emails.
 
-    Uses Mail's native indexed ``search <mailbox> for <keyword>`` command instead
-    of iterating all messages, making it dramatically faster on large mailboxes.
+    Uses AppleScript's ``whose`` clause to filter messages by subject and sender.
+    The ``whose`` predicate is evaluated by Mail's Objective-C runtime — it is a
+    server-side declarative filter, not a full message iteration, so it is
+    reasonably fast even on large mailboxes.
+
+    Note: Mail 16 (macOS 26) removed the ``search <mailbox> for <keyword>``
+    command from its AppleScript dictionary, making the ``whose`` approach the
+    correct replacement.
 
     *keyword_safe*, *account_safe*, and *mailbox_safe* must already have been
     processed by ``_sanitize_for_applescript``.
@@ -220,7 +226,7 @@ tell application "Mail"
                 end if
                 if not shouldSkip then
                     try
-                        set matchedMsgs to search aMailbox for kw
+                        set matchedMsgs to (messages of aMailbox whose subject contains kw or sender contains kw)
                         repeat with aMsg in matchedMsgs
                             if resultCount >= maxResults then exit repeat
                             try
