@@ -31,6 +31,7 @@ venv/bin/pip freeze > requirements.txt
 - Run via `asyncio.create_subprocess_exec("osascript", "-e", script)`
 - 60-second async timeout with `proc.kill()` on expiry
 - All user strings pass through `_sanitize_for_applescript()` before embedding
+- **Line continuation:** AppleScript uses `¬` (U+00AC), NOT `\`. When scripts are passed via `osascript -e`, the parser is strict — a `\` at end of line produces error -2741 ("Expected expression but found unknown token"). Always use sequential assignment statements instead of multi-line expressions.
 
 **Search strategy (`mail_search_emails`):**
 - Uses AppleScript's `whose` clause: `(messages of aMailbox whose subject contains kw or sender contains kw)`

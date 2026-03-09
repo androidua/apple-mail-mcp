@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -301,14 +301,14 @@ tell application "Mail"
                                 end try
                             end repeat
                             set nl to (ASCII character 10)
-                            set out to "SUBJECT: " & msgSubject & nl & \\
-                                       "FROM: "    & msgSender  & nl & \\
-                                       "TO: "      & toStr      & nl & \\
-                                       "CC: "      & ccStr      & nl & \\
-                                       "DATE: "    & msgDate    & nl & \\
-                                       "READ: "    & isReadStr  & nl & \\
-                                       "---BODY_START---" & nl  & \\
-                                       msgContent
+                            set out to "SUBJECT: " & msgSubject & nl
+                            set out to out & "FROM: "    & msgSender  & nl
+                            set out to out & "TO: "      & toStr      & nl
+                            set out to out & "CC: "      & ccStr      & nl
+                            set out to out & "DATE: "    & msgDate    & nl
+                            set out to out & "READ: "    & isReadStr  & nl
+                            set out to out & "---BODY_START---" & nl
+                            set out to out & msgContent
                             set found to true
                             return out
                         end if

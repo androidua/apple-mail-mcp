@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.1.0**
+Current: **1.1.2**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -126,6 +126,12 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.1.2 — 2026-03-09
+- **Fix:** replaced backslash line-continuation characters (`\`) in the
+  `_script_read_email` AppleScript template with sequential assignments —
+  AppleScript uses `¬` for continuation, not `\`; the invalid characters caused
+  all `mail_read_email` calls to fail with AppleScript syntax error -2741
 
 ### 1.1.1 — 2026-03-09
 - **Fix:** replaced `search <mailbox> for <keyword>` AppleScript command with a
