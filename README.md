@@ -73,14 +73,16 @@ Open (or create) `~/Library/Application Support/Claude/claude_desktop_config.jso
 {
   "mcpServers": {
     "apple_mail": {
-      "command": "/Users/dmytrobondarenko/Desktop/ai-projects/apple-mail-mcp/venv/bin/python",
+      "command": "/path/to/apple-mail-mcp/venv/bin/python",
       "args": [
-        "/Users/dmytrobondarenko/Desktop/ai-projects/apple-mail-mcp/apple_mail_mcp.py"
+        "/path/to/apple-mail-mcp/apple_mail_mcp.py"
       ]
     }
   }
 }
 ```
+
+Replace `/path/to/apple-mail-mcp` with the absolute path to the directory where you cloned the repository (e.g. `/Users/yourname/projects/apple-mail-mcp`).
 
 Restart Claude Desktop after saving the file.
 
@@ -102,7 +104,7 @@ Once connected, you can ask Claude things like:
 
 ## Performance
 
-`mail_search_emails` uses Apple Mail's native indexed search (`search <mailbox> for <keyword>`), which is backed by Mail's internal Spotlight index. This makes searches fast even on accounts with hundreds of thousands of messages. System mailboxes (Trash, Junk, Spam) are skipped by default.
+`mail_search_emails` uses AppleScript's `whose` clause — a declarative predicate evaluated by Mail's Objective-C runtime — to filter messages by subject and sender. This is fast even on accounts with hundreds of thousands of messages, and works correctly on macOS 26 / Mail 16 (which removed the older `search <mailbox> for <keyword>` AppleScript command). System mailboxes (Trash, Junk, Spam) are skipped by default.
 
 To further scope a search, pass the optional `account` and/or `mailbox_name` parameters — e.g. restrict to `account="Yahoo"` and `mailbox_name="INBOX"` to avoid scanning all accounts.
 
