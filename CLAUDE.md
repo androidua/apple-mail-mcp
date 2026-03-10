@@ -87,7 +87,7 @@ Update `VERSION = "x.y.z"` in `apple_mail_mcp.py`, add a changelog entry in `REA
 
 ## Git workflow
 
-Push to GitHub on every meaningful change:
+This is a **solo project** — always commit and push directly to `main`. Never create branches or pull requests.
 
 ```bash
 git add -A
@@ -97,6 +97,8 @@ git push origin main --tags
 ```
 
 Commit types: `feat`, `fix`, `docs`, `refactor`, `chore`.
+
+Always include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer in every commit message.
 
 ## Dependencies
 
