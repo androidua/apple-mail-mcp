@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.1.1
+Apple Mail MCP Server  v1.1.2
 ==============================
 
 CAN DO:
