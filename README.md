@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.2.0**
+Current: **1.2.1**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -128,6 +128,12 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.2.1 — 2026-03-25
+- **Fix (critical):** remove `proc.stdout.close()` / `proc.stderr.close()` — `asyncio.StreamReader` has no `.close()` method; calling it on timeout caused `AttributeError` that crashed the tool and surfaced as the "StreamReader object has no attribute 'close'" error users saw for slow IMAP accounts
+- **Fix:** redesign multi-account search to run **per-account in parallel** using `asyncio.gather(return_exceptions=True)` — a slow or offline account (Yahoo!, Hotmail, etc.) can no longer block or crash results from other accounts; each account gets an independent 45-second timeout
+- **Fix:** when a specific `account` is provided the original single-script path is preserved (60 s timeout); parallel path is used only for cross-account searches
+- **UX:** results now include a warning listing which accounts timed out, rather than crashing silently
 
 ### 1.2.0 — 2026-03-25
 - **Feature:** `mail_search_emails` now accepts `since_days` (integer, 1–365) to filter emails by date received — supports natural queries like "last 7 days", "yesterday", "past month"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.2.0
+Apple Mail MCP Server  v1.2.1
 ==============================
 
 CAN DO:
@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator, ConfigD
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -141,12 +141,6 @@ async def _run_applescript(script: str, timeout: float = 60.0) -> str:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
-        # Close asyncio pipe transports before waiting so that uncollected
-        # pipe buffers do not accumulate file descriptors under repeated timeouts.
-        if proc.stdout:
-            proc.stdout.close()
-        if proc.stderr:
-            proc.stderr.close()
         await proc.wait()
         raise RuntimeError(
             f"AppleScript timed out after {timeout:.0f} s. "
@@ -180,6 +174,21 @@ async def _run_applescript(script: str, timeout: float = 60.0) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # AppleScript templates
 # ──────────────────────────────────────────────────────────────────────────────
+
+_SCRIPT_LIST_ACCOUNTS = """\
+tell application "Mail"
+    set rs to (ASCII character 30)
+    set names to {}
+    repeat with anAccount in every account
+        set end of names to name of anAccount
+    end repeat
+    if (count of names) is 0 then return ""
+    set AppleScript's text item delimiters to rs
+    set out to names as text
+    set AppleScript's text item delimiters to ""
+    return out
+end tell
+"""
 
 _SCRIPT_LIST_MAILBOXES = """\
 tell application "Mail"
@@ -634,20 +643,10 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         - Returns a "No emails found" message if there are no matches.
         - Pydantic validates all inputs before any AppleScript runs.
     """
-    keyword_safe  = _sanitize_for_applescript(params.keyword or "")
-    account_safe  = _sanitize_for_applescript(params.account or "")
-    mailbox_safe  = _sanitize_for_applescript(params.mailbox_name or "")
-    script = _script_search_emails(
-        keyword_safe, params.limit, account_safe, mailbox_safe, params.since_days
-    )
+    keyword_safe = _sanitize_for_applescript(params.keyword or "")
+    mailbox_safe = _sanitize_for_applescript(params.mailbox_name or "")
 
-    try:
-        raw = await _run_applescript(script)
-    except RuntimeError as exc:
-        return f"Error accessing Apple Mail: {exc}"
-
-    # Build a human-readable description of the active filters for use in
-    # "no results" messages and the results header.
+    # Human-readable description of active filters (used in headers/messages).
     _filter_parts = []
     if params.keyword:
         _filter_parts.append(f'"{params.keyword}"')
@@ -657,47 +656,100 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         )
     _filter_desc = " · ".join(_filter_parts) if _filter_parts else "all mail"
 
-    if not raw:
-        return f"No emails found ({_filter_desc})."
+    # ── Execution strategy ────────────────────────────────────────────────────
+    # When the caller scopes to a specific account, run a single script.
+    # Otherwise, enumerate accounts and run one script per account in parallel
+    # with individual timeouts — a slow/offline IMAP account cannot block or
+    # crash results from the other accounts.
+    # ─────────────────────────────────────────────────────────────────────────
 
-    results: list[dict] = []
-    skipped = 0
-    for row in raw.split(_ROW_SEP):
-        parts = row.split(_FIELD_SEP)
-        if len(parts) < 7:
-            skipped += 1
-            continue
-        # Parse fixed-position fields from both ends so that a subject
-        # containing a \x1f byte does not shift the trailing columns.
-        # Format: account \x1f mailbox \x1f msg_id \x1f subject \x1f sender \x1f date \x1f is_read
-        account     = parts[0]
-        mailbox     = parts[1]
-        msg_id      = parts[2]
-        is_read_str = parts[-1]
-        date_str    = parts[-2]
-        sender      = parts[-3]
-        subject     = _FIELD_SEP.join(parts[3:-3])
-        if not account.strip() and not mailbox.strip():
-            skipped += 1
-            continue
+    if params.account:
+        # Single-account path — simple, fast.
+        account_safe = _sanitize_for_applescript(params.account)
+        script = _script_search_emails(
+            keyword_safe, params.limit, account_safe, mailbox_safe, params.since_days
+        )
         try:
-            email_ref = _encode_email_ref(account, mailbox, msg_id)
-        except Exception:
-            skipped += 1
-            continue
-        results.append(
-            {
-                "email_id": email_ref,
-                "account": account,
-                "mailbox": mailbox,
-                "subject": subject,
-                "sender": sender,
-                "date": date_str,
-                "read": is_read_str.strip().lower() == "true",
-            }
+            raw_outputs = [await _run_applescript(script, timeout=60.0)]
+        except RuntimeError as exc:
+            return f"Error accessing Apple Mail: {exc}"
+        timed_out: list[str] = []
+
+    else:
+        # Multi-account parallel path.
+        try:
+            accounts_raw = await _run_applescript(_SCRIPT_LIST_ACCOUNTS, timeout=10.0)
+        except RuntimeError as exc:
+            return f"Error accessing Apple Mail: {exc}"
+
+        if not accounts_raw:
+            return "No accounts found in Apple Mail. Make sure at least one account is configured."
+
+        account_names = [a for a in accounts_raw.split(_ROW_SEP) if a.strip()]
+
+        async def _search_one_account(acct_name: str) -> str:
+            safe = _sanitize_for_applescript(acct_name)
+            s = _script_search_emails(
+                keyword_safe, params.limit, safe, mailbox_safe, params.since_days
+            )
+            # 45 s per-account timeout — generous enough for large IMAP mailboxes
+            # but bounded so one slow account cannot stall the whole response.
+            return await _run_applescript(s, timeout=45.0)
+
+        outcomes = await asyncio.gather(
+            *[_search_one_account(a) for a in account_names],
+            return_exceptions=True,
         )
 
-    if not results:
+        raw_outputs: list[str] = []
+        timed_out = []
+        for acct_name, outcome in zip(account_names, outcomes):
+            if isinstance(outcome, Exception):
+                timed_out.append(acct_name)
+            elif outcome:
+                raw_outputs.append(outcome)
+
+    # ── Parse rows from all collected outputs ─────────────────────────────────
+    results: list[dict] = []
+    skipped = 0
+    for raw in raw_outputs:
+        for row in raw.split(_ROW_SEP):
+            if len(results) >= params.limit:
+                break
+            parts = row.split(_FIELD_SEP)
+            if len(parts) < 7:
+                skipped += 1
+                continue
+            # Parse fixed-position fields from both ends so a \x1f byte in a
+            # subject does not shift the trailing columns.
+            account  = parts[0]
+            mailbox  = parts[1]
+            msg_id   = parts[2]
+            is_read_str = parts[-1]
+            date_str    = parts[-2]
+            sender      = parts[-3]
+            subject     = _FIELD_SEP.join(parts[3:-3])
+            if not account.strip() and not mailbox.strip():
+                skipped += 1
+                continue
+            try:
+                email_ref = _encode_email_ref(account, mailbox, msg_id)
+            except Exception:
+                skipped += 1
+                continue
+            results.append(
+                {
+                    "email_id": email_ref,
+                    "account":  account,
+                    "mailbox":  mailbox,
+                    "subject":  subject,
+                    "sender":   sender,
+                    "date":     date_str,
+                    "read":     is_read_str.strip().lower() == "true",
+                }
+            )
+
+    if not results and not timed_out:
         return f"No emails found ({_filter_desc})."
 
     if params.response_format == "json":
@@ -720,8 +772,13 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             f"   - ID: `{r['email_id']}`",
             "",
         ]
+    if timed_out:
+        lines.append(
+            f"*⚠ The following account(s) did not respond in time and were skipped: "
+            f"{', '.join(timed_out)}. Try scoping your search to one account.*"
+        )
     if skipped:
-        lines.append(f"*{skipped} result(s) could not be parsed and were omitted.*")
+        lines.append(f"*{skipped} row(s) could not be parsed and were omitted.*")
     return "\n".join(lines)
 
 
