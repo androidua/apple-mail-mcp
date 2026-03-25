@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.1.3**
+Current: **1.1.4**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -128,6 +128,11 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.1.4 — 2026-03-25
+- **Fix (regression):** revert `_script_read_email` to proven account/mailbox iteration — direct AppleScript addressing (`mailbox X of account Y`) was unreliable for non-standard account types (Gmail, Exchange, shared accounts)
+- **Fix (regression):** revert `mail_search_emails` JSON output to flat array `[...]` — the `{"results": [...]}` wrapper introduced in v1.1.3 broke Claude AI's ability to extract `email_id` values from results
+- **Fix:** improve AppleScript error categorisation — errors now return actionable messages (Mail not running, Automation permission denied, item not found) instead of a generic fallback; raw AppleScript error text is still logged internally
 
 ### 1.1.3 — 2026-03-25
 - **Fix (reliability):** close asyncio pipe transports before `await proc.wait()` on timeout — prevents file descriptor accumulation under repeated Mail.app timeouts

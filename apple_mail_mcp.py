@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.1.2
+Apple Mail MCP Server  v1.1.4
 ==============================
 
 CAN DO:
@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -155,13 +155,24 @@ async def _run_applescript(script: str, timeout: float = 60.0) -> str:
 
     if proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace").strip()
-        # Log the raw AppleScript error internally; do not forward it to the
-        # caller to avoid leaking script fragments or internal path details.
+        # Log full detail internally for debugging; return a category-specific
+        # message to the caller so it is actionable without leaking script text.
         print(f"[apple_mail_mcp] osascript error (exit {proc.returncode}): {err}", file=sys.stderr)
-        raise RuntimeError(
-            f"AppleScript failed (exit {proc.returncode}). "
-            "Make sure Apple Mail is open and try again."
-        )
+        if "-600" in err or "not running" in err.lower():
+            human_err = "Apple Mail is not running. Please open Mail.app and try again."
+        elif "-1743" in err or "not authorized" in err.lower() or "automation" in err.lower():
+            human_err = (
+                "Automation permission denied. Open System Settings → Privacy & Security "
+                "→ Automation and allow this app to control Mail."
+            )
+        elif "-1728" in err or "can't get" in err.lower():
+            human_err = "Mail item not found — it may have been moved or deleted."
+        else:
+            human_err = (
+                f"AppleScript error (code {proc.returncode}). "
+                "Make sure Apple Mail is open and try again."
+            )
+        raise RuntimeError(human_err)
 
     return stdout.decode("utf-8", errors="replace").strip()
 
@@ -284,58 +295,61 @@ tell application "Mail"
     set acctTarget to "{account_safe}"
     set mbxTarget  to "{mailbox_safe}"
     set idTarget   to "{msg_id_safe}"
-    try
-        set aMailbox to mailbox mbxTarget of account acctTarget
-    on error
-        return "ERROR: Message not found in the specified account/mailbox"
-    end try
-    try
-        set matched to (messages of aMailbox whose message id = idTarget)
-        if (count of matched) = 0 then
-            return "ERROR: Message not found in the specified account/mailbox"
+    repeat with anAccount in every account
+        if (name of anAccount) = acctTarget then
+            repeat with aMailbox in every mailbox of anAccount
+                if (name of aMailbox) = mbxTarget then
+                    try
+                        set matched to (messages of aMailbox whose message id = idTarget)
+                        if (count of matched) > 0 then
+                            set aMsg to item 1 of matched
+                            set msgSubject to subject of aMsg
+                            set msgSender  to sender of aMsg
+                            set msgDate    to (date received of aMsg) as string
+                            set msgContent to content of aMsg
+                            set isReadStr  to "false"
+                            if read status of aMsg then set isReadStr to "true"
+                            set toStr to ""
+                            repeat with r in (to recipients of aMsg)
+                                if toStr is not "" then set toStr to toStr & ", "
+                                try
+                                    set toStr to toStr & (name of r) & " <" & (address of r) & ">"
+                                on error
+                                    try
+                                        set toStr to toStr & (address of r)
+                                    end try
+                                end try
+                            end repeat
+                            set ccStr to ""
+                            repeat with r in (cc recipients of aMsg)
+                                if ccStr is not "" then set ccStr to ccStr & ", "
+                                try
+                                    set ccStr to ccStr & (name of r) & " <" & (address of r) & ">"
+                                on error
+                                    try
+                                        set ccStr to ccStr & (address of r)
+                                    end try
+                                end try
+                            end repeat
+                            set nl to (ASCII character 10)
+                            set out to "SUBJECT: " & msgSubject & nl
+                            set out to out & "FROM: "    & msgSender  & nl
+                            set out to out & "TO: "      & toStr      & nl
+                            set out to out & "CC: "      & ccStr      & nl
+                            set out to out & "DATE: "    & msgDate    & nl
+                            set out to out & "READ: "    & isReadStr  & nl
+                            set out to out & "---BODY_START---" & nl
+                            set out to out & msgContent
+                            return out
+                        end if
+                    end try
+                    exit repeat
+                end if
+            end repeat
+            exit repeat
         end if
-        set aMsg to item 1 of matched
-        set msgSubject to subject of aMsg
-        set msgSender  to sender of aMsg
-        set msgDate    to (date received of aMsg) as string
-        set msgContent to content of aMsg
-        set isReadStr  to "false"
-        if read status of aMsg then set isReadStr to "true"
-        set toStr to ""
-        repeat with r in (to recipients of aMsg)
-            if toStr is not "" then set toStr to toStr & ", "
-            try
-                set toStr to toStr & (name of r) & " <" & (address of r) & ">"
-            on error
-                try
-                    set toStr to toStr & (address of r)
-                end try
-            end try
-        end repeat
-        set ccStr to ""
-        repeat with r in (cc recipients of aMsg)
-            if ccStr is not "" then set ccStr to ccStr & ", "
-            try
-                set ccStr to ccStr & (name of r) & " <" & (address of r) & ">"
-            on error
-                try
-                    set ccStr to ccStr & (address of r)
-                end try
-            end try
-        end repeat
-        set nl to (ASCII character 10)
-        set out to "SUBJECT: " & msgSubject & nl
-        set out to out & "FROM: "    & msgSender  & nl
-        set out to out & "TO: "      & toStr      & nl
-        set out to out & "CC: "      & ccStr      & nl
-        set out to out & "DATE: "    & msgDate    & nl
-        set out to out & "READ: "    & isReadStr  & nl
-        set out to out & "---BODY_START---" & nl
-        set out to out & msgContent
-        return out
-    on error
-        return "ERROR: Message not found in the specified account/mailbox"
-    end try
+    end repeat
+    return "ERROR: Message not found in the specified account/mailbox"
 end tell
 """
 
@@ -642,10 +656,7 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         return f'No emails found matching "{params.keyword}".'
 
     if params.response_format == "json":
-        out: dict = {"results": results}
-        if skipped:
-            out["_warnings"] = [f"{skipped} result(s) could not be parsed and were omitted."]
-        return json.dumps(out, indent=2, ensure_ascii=False)
+        return json.dumps(results, indent=2, ensure_ascii=False)
 
     lines: list[str] = [
         f'# Search Results: "{params.keyword}"',
