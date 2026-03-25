@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.1.4
+Apple Mail MCP Server  v1.2.0
 ==============================
 
 CAN DO:
@@ -32,13 +32,13 @@ import sys
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.1.4"
+VERSION = "1.2.0"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -206,32 +206,45 @@ def _script_search_emails(
     limit: int,
     account_safe: str = "",
     mailbox_safe: str = "",
+    since_days: Optional[int] = None,
 ) -> str:
     """Build the AppleScript for searching emails.
 
-    Uses AppleScript's ``whose`` clause to filter messages by subject and sender.
-    The ``whose`` predicate is evaluated by Mail's Objective-C runtime, which
-    avoids N AppleScript bridge roundtrips, but it is still a linear scan of
-    every message at the Objective-C layer — O(n) per mailbox. Performance
-    degrades on large mailboxes with common keywords.
+    Uses AppleScript's ``whose`` clause to filter messages. The predicate is
+    evaluated by Mail's Objective-C runtime, which avoids N bridge roundtrips,
+    but is still a linear scan — O(n) per mailbox at the ObjC layer.
 
-    Important: the ``whose`` clause fully materialises the entire match list
-    before the ``limit`` early-exit takes effect. A low *limit* does not
-    reduce the scan cost — it only prunes the output.
+    Note: the ``whose`` clause fully materialises the match list before the
+    Python-side ``limit`` early-exit takes effect. A low *limit* reduces output
+    size but does not reduce the scan cost for common keywords.
 
-    Note: Mail 16 (macOS 26) removed the ``search <mailbox> for <keyword>``
-    command from its AppleScript dictionary, making the ``whose`` approach the
-    correct replacement.
+    Supports three filter modes (combinable):
+    - *keyword_safe*: match subject or sender (case-insensitive)
+    - *since_days*: match messages received within the last N days;
+      uses AppleScript's built-in ``days`` unit constant so no shell is needed
 
     *keyword_safe*, *account_safe*, and *mailbox_safe* must already have been
     processed by ``_sanitize_for_applescript``.
 
     When *mailbox_safe* is empty, system mailboxes (Trash, Junk, etc.) are
-    excluded automatically. When a specific *mailbox_safe* is given, that
-    exclusion is skipped so the user can explicitly search Trash if desired.
+    excluded automatically.
 
     Python f-string: ``{{}}`` → ``{}``  (empty AppleScript list literal).
     """
+    # Build whose predicate dynamically based on active filters.
+    predicates = []
+    if keyword_safe:
+        predicates.append("(subject contains kw or sender contains kw)")
+    if since_days is not None:
+        predicates.append(
+            f"(date received >= ((current date) - ({int(since_days)} * days)))"
+        )
+    if predicates:
+        msg_filter = f"(messages of aMailbox whose {' and '.join(predicates)})"
+    else:
+        # No filter: browse all messages up to the limit.
+        msg_filter = "every message of aMailbox"
+
     return f"""\
 tell application "Mail"
     set fs to (ASCII character 31)
@@ -258,7 +271,7 @@ tell application "Mail"
                 end if
                 if not shouldSkip then
                     try
-                        set matchedMsgs to (messages of aMailbox whose subject contains kw or sender contains kw)
+                        set matchedMsgs to {msg_filter}
                         repeat with aMsg in matchedMsgs
                             if resultCount >= maxResults then exit repeat
                             try
@@ -372,14 +385,24 @@ class ListMailboxesInput(BaseModel):
 class SearchEmailsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    keyword: str = Field(
-        ...,
+    keyword: Optional[str] = Field(
+        default=None,
         description=(
             "Keyword to search for. Matched case-insensitively against the "
-            "email subject line and the sender (From) field across all mailboxes."
+            "email subject line and the sender (From) field. "
+            "Omit when filtering by date only (use since_days instead)."
         ),
-        min_length=1,
         max_length=200,
+    )
+    since_days: Optional[int] = Field(
+        default=None,
+        description=(
+            "Return only emails received within the last N days. "
+            "Use 1 for today/yesterday, 7 for the past week, 30 for the past month. "
+            "Can be combined with keyword to narrow results by both text and date."
+        ),
+        ge=1,
+        le=365,
     )
     limit: int = Field(
         default=20,
@@ -414,10 +437,19 @@ class SearchEmailsInput(BaseModel):
 
     @field_validator("keyword")
     @classmethod
-    def keyword_not_blank(cls, v: str) -> str:
-        if not v.strip():
+    def keyword_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
             raise ValueError("keyword must not be blank or whitespace only")
-        return v.strip()
+        return v.strip() if v else v
+
+    @model_validator(mode="after")
+    def at_least_one_filter(self) -> "SearchEmailsInput":
+        if not self.keyword and self.since_days is None:
+            raise ValueError(
+                "Provide at least one of: keyword (search term) or "
+                "since_days (e.g. 7 for the last week)."
+            )
+        return self
 
 
 class ReadEmailInput(BaseModel):
@@ -602,18 +634,31 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         - Returns a "No emails found" message if there are no matches.
         - Pydantic validates all inputs before any AppleScript runs.
     """
-    keyword_safe  = _sanitize_for_applescript(params.keyword)
+    keyword_safe  = _sanitize_for_applescript(params.keyword or "")
     account_safe  = _sanitize_for_applescript(params.account or "")
     mailbox_safe  = _sanitize_for_applescript(params.mailbox_name or "")
-    script = _script_search_emails(keyword_safe, params.limit, account_safe, mailbox_safe)
+    script = _script_search_emails(
+        keyword_safe, params.limit, account_safe, mailbox_safe, params.since_days
+    )
 
     try:
         raw = await _run_applescript(script)
     except RuntimeError as exc:
         return f"Error accessing Apple Mail: {exc}"
 
+    # Build a human-readable description of the active filters for use in
+    # "no results" messages and the results header.
+    _filter_parts = []
+    if params.keyword:
+        _filter_parts.append(f'"{params.keyword}"')
+    if params.since_days:
+        _filter_parts.append(
+            f"last {params.since_days} day{'s' if params.since_days != 1 else ''}"
+        )
+    _filter_desc = " · ".join(_filter_parts) if _filter_parts else "all mail"
+
     if not raw:
-        return f'No emails found matching "{params.keyword}".'
+        return f"No emails found ({_filter_desc})."
 
     results: list[dict] = []
     skipped = 0
@@ -653,15 +698,15 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         )
 
     if not results:
-        return f'No emails found matching "{params.keyword}".'
+        return f"No emails found ({_filter_desc})."
 
     if params.response_format == "json":
         return json.dumps(results, indent=2, ensure_ascii=False)
 
     lines: list[str] = [
-        f'# Search Results: "{params.keyword}"',
+        f"# Search Results: {_filter_desc}",
         "",
-        f'Found {len(results)} email(s) matching "{params.keyword}"',
+        f"Found {len(results)} email(s) — {_filter_desc}",
         "",
     ]
     for i, r in enumerate(results, 1):

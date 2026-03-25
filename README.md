@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.1.4**
+Current: **1.2.0**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -128,6 +128,13 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.2.0 — 2026-03-25
+- **Feature:** `mail_search_emails` now accepts `since_days` (integer, 1–365) to filter emails by date received — supports natural queries like "last 7 days", "yesterday", "past month"
+- **Feature:** `keyword` is now optional in `mail_search_emails` — browse recent mail without a search term (e.g. `since_days=1` returns today's mail)
+- Both filters are combinable: `keyword="invoice" + since_days=30` returns invoice emails from the past month
+- Result headers and "no results" messages now reflect which filters were active
+- **Note:** body content search is intentionally not supported — AppleScript's `whose content contains` forces a full body download for every message, making it impractically slow on real mailboxes
 
 ### 1.1.4 — 2026-03-25
 - **Fix (regression):** revert `_script_read_email` to proven account/mailbox iteration — direct AppleScript addressing (`mailbox X of account Y`) was unreliable for non-standard account types (Gmail, Exchange, shared accounts)
