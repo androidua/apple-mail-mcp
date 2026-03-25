@@ -34,11 +34,13 @@ venv/bin/pip freeze > requirements.txt
 - **Line continuation:** AppleScript uses `¬` (U+00AC), NOT `\`. When scripts are passed via `osascript -e`, the parser is strict — a `\` at end of line produces error -2741 ("Expected expression but found unknown token"). Always use sequential assignment statements instead of multi-line expressions.
 
 **Search strategy (`mail_search_emails`):**
-- Uses AppleScript's `whose` clause: `(messages of aMailbox whose subject contains kw or sender contains kw)`
-- The `whose` predicate is evaluated server-side by Mail's Objective-C runtime — it is a declarative filter, not a Python-level iteration
-- **Why `whose` instead of `search`:** Mail 16 (macOS 26) removed the `search <mailbox> for <keyword>` command from its AppleScript dictionary. The `whose` clause is the correct replacement.
+- `whose` clause builds its predicate dynamically from active filters (keyword and/or `since_days`)
+- **Why `whose` instead of `search`:** Mail 16 (macOS 26) removed the `search <mailbox> for <keyword>` command. The `whose` clause is the correct replacement.
+- `whose` is O(n) per mailbox at the Objective-C layer — it fully materialises the match list before any Python-side limit applies. Low `limit` reduces output size, not scan cost.
 - Trash, Deleted Messages, Junk, Spam, Bulk Mail, Junk E-mail are skipped by default when no `mailbox_name` filter is set
-- Optional `account` and `mailbox_name` parameters scope the search; both are sanitised before embedding
+- **Multi-account parallel execution:** when no `account` filter is set, the tool first calls `_SCRIPT_LIST_ACCOUNTS` to enumerate accounts, then runs one search script per account via `asyncio.gather(return_exceptions=True)` with a 45 s per-account timeout. A slow/offline IMAP account cannot block or crash results from other accounts. Timed-out accounts are listed as a warning in the response.
+- When `account` is specified, a single script runs with a 60 s timeout (no gather overhead).
+- **Do NOT call `proc.stdout.close()` or `proc.stderr.close()` on timeout** — `asyncio.StreamReader` has no `.close()` method. Use only `proc.kill()` + `await proc.wait()`.
 
 **Email references:** opaque base64url-encoded JSON blobs `{"a": account, "m": mailbox, "i": message_id}`. Never expose raw Apple Mail message IDs to callers.
 
@@ -50,7 +52,7 @@ venv/bin/pip freeze > requirements.txt
 ## Input sanitisation (must not be weakened)
 
 `_sanitize_for_applescript(value, max_length=500)`:
-1. Strip C0 control characters (except `\t`, `\n`, `\r`) via regex
+1. Strip C0 **and C1** control characters (U+0000–U+001F except `\t`, `\n`, `\r`, and U+007F–U+009F) via `_CTRL_STRIP_RE`
 2. Truncate to `max_length`
 3. Escape `\` → `\\`
 4. Escape `"` → `\"`
@@ -62,8 +64,14 @@ This prevents AppleScript injection. Never bypass or remove these steps.
 | Tool | Input model | What it does |
 |------|-------------|--------------|
 | `mail_list_mailboxes` | `ListMailboxesInput` | Lists all accounts and mailboxes |
-| `mail_search_emails` | `SearchEmailsInput` | Indexed keyword search; optional `account` and `mailbox_name` filters |
+| `mail_search_emails` | `SearchEmailsInput` | Search by keyword and/or date range (`since_days`); at least one required; optional `account` and `mailbox_name` filters; parallel per-account execution |
 | `mail_read_email` | `ReadEmailInput` | Reads full email by opaque `email_id` |
+
+**`SearchEmailsInput` key fields:**
+- `keyword` — optional (was required pre-v1.2.0); matched against subject and sender
+- `since_days` — optional integer 1–365; filters by `date received >= (current date) - (N * days)`
+- At least one of `keyword` / `since_days` must be provided (enforced by `model_validator`)
+- Body content search is intentionally unsupported — `whose content contains` forces full body download for every message
 
 All tools are annotated `readOnlyHint=True`, `destructiveHint=False`.
 
