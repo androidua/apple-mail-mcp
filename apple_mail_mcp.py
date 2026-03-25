@@ -587,61 +587,63 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
     },
 )
 async def mail_search_emails(params: SearchEmailsInput) -> str:
-    """Search Apple Mail for emails whose subject or sender matches a keyword.
+    """Search Apple Mail for emails by keyword and/or date range.
 
-    Searches across all configured accounts and all mailboxes using Apple
-    Mail's native indexed search, which is fast even on mailboxes with
-    hundreds of thousands of messages. System mailboxes (Trash, Junk, Spam)
-    are excluded by default unless explicitly targeted via mailbox_name.
-    Returns matching emails with opaque email_id values that can be passed to
-    mail_read_email to retrieve the full message content.
+    Searches across all configured accounts in parallel. System mailboxes
+    (Trash, Junk, Spam) are excluded by default. Returns matching emails
+    with opaque email_id values for use with mail_read_email.
+
+    IMPORTANT — date range strategy (always follow this order):
+        Large date windows (since_days > 90) are slow on big IMAP accounts
+        and frequently timeout. Always start narrow and expand only if needed:
+
+        Step 1: since_days=7   → if results < needed, continue
+        Step 2: since_days=30  → if results < needed, continue
+        Step 3: since_days=90  → if results < needed, continue
+        Step 4: since_days=365 → last resort only
+
+        Never jump straight to since_days=365 for vague queries like
+        "recent emails" or "last few emails". Start with 7 days.
 
     Args:
         params (SearchEmailsInput): Input containing:
-            - keyword (str): Search term (1–200 chars). Required.
+            - keyword (str): Optional search term matched against subject and
+              sender. Omit when filtering by date only.
+            - since_days (int): Optional. Restrict to emails received in the
+              last N days (1–365). Use 1=today, 7=week, 30=month.
             - limit (int): Max results to return (default 20, max 100).
-            - account (str): Optional. Restrict to one account (e.g. 'Yahoo').
+            - account (str): Optional. Restrict to one account (e.g. 'iCloud').
             - mailbox_name (str): Optional. Restrict to one mailbox (e.g. 'INBOX').
             - response_format (str): 'markdown' (default) or 'json'.
 
+        At least one of keyword or since_days must be provided.
+
     Returns:
-        str: Matching emails with subject, sender, date, read-status, and email_id.
+        str: Matching emails with subject, sender, date, read-status, email_id.
+        Timed-out accounts are listed as a warning (not a crash).
 
         Markdown example:
-            # Search Results: "invoice"
-
-            Found 3 email(s) matching "invoice"
-
-            1. **Invoice for March**
-               - From: billing@example.com
-               - Mailbox: iCloud / INBOX
-               - Date: Monday, 3 March 2025 at 09:14:02
-               - Read: Yes
-               - ID: `eyJhIjoiaUNsb3VkIi...`
+            # Search Results: "invoice" · last 30 days
+            Found 3 email(s) ...
 
         JSON example:
-            [
-              {
-                "email_id": "eyJhIjoiaUNsb3VkIi...",
-                "account": "iCloud",
-                "mailbox": "INBOX",
-                "subject": "Invoice for March",
-                "sender": "billing@example.com",
-                "date": "Monday, 3 March 2025 at 09:14:02",
-                "read": true
-              }
-            ]
+            [{"email_id": "...", "account": "iCloud", "mailbox": "INBOX",
+              "subject": "Invoice", "sender": "x@y.com",
+              "date": "Mon 3 Mar 2025", "read": true}]
 
     Examples:
-        - Use when: "Find emails from Alice" → keyword="Alice"
-        - Use when: "Search for invoice emails, top 5" → keyword="invoice", limit=5
-        - Use when: "Search only Yahoo INBOX" → account="Yahoo", mailbox_name="INBOX"
-        - Don't use when: You already have an email_id (use mail_read_email).
+        - "Most recent 3 emails"          → since_days=7, limit=3
+          (expand to 30/90 if < 3 found)
+        - "Emails this week"              → since_days=7
+        - "Invoices in the past month"    → keyword="invoice", since_days=30
+        - "Find emails from Alice"        → keyword="Alice", since_days=30
+        - "Search only Yahoo INBOX"       → account="Yahoo", mailbox_name="INBOX", since_days=7
 
     Error Handling:
         - Returns an error string if Mail.app cannot be reached.
-        - Returns a "No emails found" message if there are no matches.
-        - Pydantic validates all inputs before any AppleScript runs.
+        - Returns "No emails found" with filter description if no matches.
+        - Accounts that exceed the 45 s per-account timeout are listed as
+          warnings; other accounts' results are still returned.
     """
     keyword_safe = _sanitize_for_applescript(params.keyword or "")
     mailbox_safe = _sanitize_for_applescript(params.mailbox_name or "")

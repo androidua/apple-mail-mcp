@@ -42,6 +42,14 @@ venv/bin/pip freeze > requirements.txt
 - When `account` is specified, a single script runs with a 60 s timeout (no gather overhead).
 - **Do NOT call `proc.stdout.close()` or `proc.stderr.close()` on timeout** — `asyncio.StreamReader` has no `.close()` method. Use only `proc.kill()` + `await proc.wait()`.
 
+**Progressive date window strategy (important for AI callers):**
+Large `since_days` values (e.g. 365) on big IMAP accounts cause timeouts even with the 45 s per-account budget. Always start narrow and expand:
+1. `since_days=7` → if fewer results than needed, try
+2. `since_days=30` → if still not enough, try
+3. `since_days=90` → last resort: `since_days=365`
+
+Never jump straight to `since_days=365` for vague queries like "recent emails". This strategy is documented in the tool docstring so Claude AI follows it automatically.
+
 **Email references:** opaque base64url-encoded JSON blobs `{"a": account, "m": mailbox, "i": message_id}`. Never expose raw Apple Mail message IDs to callers.
 
 **Delimiters used inside AppleScript output:**
