@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.1.2**
+Current: **1.1.3**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -128,6 +128,16 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.1.3 — 2026-03-25
+- **Fix (reliability):** close asyncio pipe transports before `await proc.wait()` on timeout — prevents file descriptor accumulation under repeated Mail.app timeouts
+- **Fix (reliability):** anchor `---BODY_START---` split to a leading newline — prevents a subject line containing that exact string from corrupting header parsing in `mail_read_email`
+- **Fix (security):** parse search output fields from both ends of the delimiter-split record — a `\x1f` byte in a subject no longer shifts sender/date/is_read columns
+- **Fix (security):** extend `_CTRL_STRIP_RE` to cover C1 controls U+0080–U+009F (including U+0085 NEL which Python's `splitlines()` treats as a line terminator)
+- **Fix (security):** log raw `osascript` stderr internally; return a generic error string to callers instead of forwarding script fragments
+- **Perf:** replace nested account/mailbox iteration in `_script_read_email` with direct AppleScript object addressing (`mailbox X of account Y`) — O(1) lookup instead of O(accounts × mailboxes) name scan
+- **Docs:** correct `whose` docstring — it is O(n) per mailbox, not indexed; low `limit` does not reduce scan cost
+- **UX:** search results now report a warning when rows were silently skipped due to parse errors
 
 ### 1.1.2 — 2026-03-09
 - **Fix:** replaced backslash line-continuation characters (`\`) in the

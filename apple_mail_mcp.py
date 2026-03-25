@@ -28,6 +28,7 @@ import asyncio
 import base64
 import json
 import re
+import sys
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -37,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
@@ -46,9 +47,12 @@ _FIELD_SEP  = "\x1f"   # ASCII Unit Separator  — field boundary
 _ROW_SEP    = "\x1e"   # ASCII Record Separator — row / message boundary
 _BODY_MARKER = "---BODY_START---"
 
-# Regex to strip dangerous C0 control characters while keeping
-# printable whitespace (TAB 0x09, LF 0x0a, CR 0x0d).
-_CTRL_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Regex to strip dangerous control characters while keeping printable
+# whitespace (TAB 0x09, LF 0x0a, CR 0x0d).
+# Covers C0 controls, DEL (0x7f), and C1 controls (U+0080–U+009F).
+# U+0085 (NEL) is notable: Python's str.splitlines() treats it as a line
+# terminator, so leaving it in could corrupt header parsing downstream.
+_CTRL_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MCP server initialisation
@@ -137,6 +141,12 @@ async def _run_applescript(script: str, timeout: float = 60.0) -> str:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        # Close asyncio pipe transports before waiting so that uncollected
+        # pipe buffers do not accumulate file descriptors under repeated timeouts.
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
         await proc.wait()
         raise RuntimeError(
             f"AppleScript timed out after {timeout:.0f} s. "
@@ -145,7 +155,13 @@ async def _run_applescript(script: str, timeout: float = 60.0) -> str:
 
     if proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"AppleScript failed (exit {proc.returncode}): {err}")
+        # Log the raw AppleScript error internally; do not forward it to the
+        # caller to avoid leaking script fragments or internal path details.
+        print(f"[apple_mail_mcp] osascript error (exit {proc.returncode}): {err}", file=sys.stderr)
+        raise RuntimeError(
+            f"AppleScript failed (exit {proc.returncode}). "
+            "Make sure Apple Mail is open and try again."
+        )
 
     return stdout.decode("utf-8", errors="replace").strip()
 
@@ -183,9 +199,14 @@ def _script_search_emails(
     """Build the AppleScript for searching emails.
 
     Uses AppleScript's ``whose`` clause to filter messages by subject and sender.
-    The ``whose`` predicate is evaluated by Mail's Objective-C runtime — it is a
-    server-side declarative filter, not a full message iteration, so it is
-    reasonably fast even on large mailboxes.
+    The ``whose`` predicate is evaluated by Mail's Objective-C runtime, which
+    avoids N AppleScript bridge roundtrips, but it is still a linear scan of
+    every message at the Objective-C layer — O(n) per mailbox. Performance
+    degrades on large mailboxes with common keywords.
+
+    Important: the ``whose`` clause fully materialises the entire match list
+    before the ``limit`` early-exit takes effect. A low *limit* does not
+    reduce the scan cost — it only prunes the output.
 
     Note: Mail 16 (macOS 26) removed the ``search <mailbox> for <keyword>``
     command from its AppleScript dictionary, making the ``whose`` approach the
@@ -263,65 +284,58 @@ tell application "Mail"
     set acctTarget to "{account_safe}"
     set mbxTarget  to "{mailbox_safe}"
     set idTarget   to "{msg_id_safe}"
-    set found to false
-    repeat with anAccount in every account
-        if (name of anAccount) = acctTarget then
-            repeat with aMailbox in every mailbox of anAccount
-                if (name of aMailbox) = mbxTarget then
-                    try
-                        set matched to (messages of aMailbox whose message id = idTarget)
-                        if (count of matched) > 0 then
-                            set aMsg to item 1 of matched
-                            set msgSubject to subject of aMsg
-                            set msgSender  to sender of aMsg
-                            set msgDate    to (date received of aMsg) as string
-                            set msgContent to content of aMsg
-                            set isReadStr  to "false"
-                            if read status of aMsg then set isReadStr to "true"
-                            set toStr to ""
-                            repeat with r in (to recipients of aMsg)
-                                if toStr is not "" then set toStr to toStr & ", "
-                                try
-                                    set toStr to toStr & (name of r) & " <" & (address of r) & ">"
-                                on error
-                                    try
-                                        set toStr to toStr & (address of r)
-                                    end try
-                                end try
-                            end repeat
-                            set ccStr to ""
-                            repeat with r in (cc recipients of aMsg)
-                                if ccStr is not "" then set ccStr to ccStr & ", "
-                                try
-                                    set ccStr to ccStr & (name of r) & " <" & (address of r) & ">"
-                                on error
-                                    try
-                                        set ccStr to ccStr & (address of r)
-                                    end try
-                                end try
-                            end repeat
-                            set nl to (ASCII character 10)
-                            set out to "SUBJECT: " & msgSubject & nl
-                            set out to out & "FROM: "    & msgSender  & nl
-                            set out to out & "TO: "      & toStr      & nl
-                            set out to out & "CC: "      & ccStr      & nl
-                            set out to out & "DATE: "    & msgDate    & nl
-                            set out to out & "READ: "    & isReadStr  & nl
-                            set out to out & "---BODY_START---" & nl
-                            set out to out & msgContent
-                            set found to true
-                            return out
-                        end if
-                    end try
-                    exit repeat
-                end if
-            end repeat
-            exit repeat
-        end if
-    end repeat
-    if not found then
+    try
+        set aMailbox to mailbox mbxTarget of account acctTarget
+    on error
         return "ERROR: Message not found in the specified account/mailbox"
-    end if
+    end try
+    try
+        set matched to (messages of aMailbox whose message id = idTarget)
+        if (count of matched) = 0 then
+            return "ERROR: Message not found in the specified account/mailbox"
+        end if
+        set aMsg to item 1 of matched
+        set msgSubject to subject of aMsg
+        set msgSender  to sender of aMsg
+        set msgDate    to (date received of aMsg) as string
+        set msgContent to content of aMsg
+        set isReadStr  to "false"
+        if read status of aMsg then set isReadStr to "true"
+        set toStr to ""
+        repeat with r in (to recipients of aMsg)
+            if toStr is not "" then set toStr to toStr & ", "
+            try
+                set toStr to toStr & (name of r) & " <" & (address of r) & ">"
+            on error
+                try
+                    set toStr to toStr & (address of r)
+                end try
+            end try
+        end repeat
+        set ccStr to ""
+        repeat with r in (cc recipients of aMsg)
+            if ccStr is not "" then set ccStr to ccStr & ", "
+            try
+                set ccStr to ccStr & (name of r) & " <" & (address of r) & ">"
+            on error
+                try
+                    set ccStr to ccStr & (address of r)
+                end try
+            end try
+        end repeat
+        set nl to (ASCII character 10)
+        set out to "SUBJECT: " & msgSubject & nl
+        set out to out & "FROM: "    & msgSender  & nl
+        set out to out & "TO: "      & toStr      & nl
+        set out to out & "CC: "      & ccStr      & nl
+        set out to out & "DATE: "    & msgDate    & nl
+        set out to out & "READ: "    & isReadStr  & nl
+        set out to out & "---BODY_START---" & nl
+        set out to out & msgContent
+        return out
+    on error
+        return "ERROR: Message not found in the specified account/mailbox"
+    end try
 end tell
 """
 
@@ -588,16 +602,29 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         return f'No emails found matching "{params.keyword}".'
 
     results: list[dict] = []
+    skipped = 0
     for row in raw.split(_ROW_SEP):
         parts = row.split(_FIELD_SEP)
         if len(parts) < 7:
+            skipped += 1
             continue
-        account, mailbox, msg_id, subject, sender, date_str, is_read_str = parts[:7]
+        # Parse fixed-position fields from both ends so that a subject
+        # containing a \x1f byte does not shift the trailing columns.
+        # Format: account \x1f mailbox \x1f msg_id \x1f subject \x1f sender \x1f date \x1f is_read
+        account     = parts[0]
+        mailbox     = parts[1]
+        msg_id      = parts[2]
+        is_read_str = parts[-1]
+        date_str    = parts[-2]
+        sender      = parts[-3]
+        subject     = _FIELD_SEP.join(parts[3:-3])
         if not account.strip() and not mailbox.strip():
+            skipped += 1
             continue
         try:
             email_ref = _encode_email_ref(account, mailbox, msg_id)
         except Exception:
+            skipped += 1
             continue
         results.append(
             {
@@ -615,7 +642,10 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         return f'No emails found matching "{params.keyword}".'
 
     if params.response_format == "json":
-        return json.dumps(results, indent=2, ensure_ascii=False)
+        out: dict = {"results": results}
+        if skipped:
+            out["_warnings"] = [f"{skipped} result(s) could not be parsed and were omitted."]
+        return json.dumps(out, indent=2, ensure_ascii=False)
 
     lines: list[str] = [
         f'# Search Results: "{params.keyword}"',
@@ -634,6 +664,8 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             f"   - ID: `{r['email_id']}`",
             "",
         ]
+    if skipped:
+        lines.append(f"*{skipped} result(s) could not be parsed and were omitted.*")
     return "\n".join(lines)
 
 
@@ -727,8 +759,11 @@ async def mail_read_email(params: ReadEmailInput) -> str:
         return f"Error: {raw[6:].strip()}"
 
     # Split header metadata from body content at the known marker.
-    if _BODY_MARKER in raw:
-        header_raw, body = raw.split(_BODY_MARKER, 1)
+    # Anchor to a leading newline so the same string appearing mid-line
+    # inside a subject or sender field is not mistaken for the real marker.
+    _marker_line = "\n" + _BODY_MARKER
+    if _marker_line in raw:
+        header_raw, body = raw.split(_marker_line, 1)
         body = body.lstrip("\n")
     else:
         header_raw = raw
