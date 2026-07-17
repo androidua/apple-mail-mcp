@@ -1136,5 +1136,10 @@ async def mail_read_email(params: ReadEmailInput) -> str:
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console entry point (used by the apple-mail-mcp script)."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -37,6 +37,23 @@ Versioning follows [Semantic Versioning](https://semver.org/):
 
 ## Setup
 
+### Quick install (uv)
+
+If you have [uv](https://docs.astral.sh/uv/) installed, you can skip cloning and the virtual environment entirely — add this to `~/Library/Application Support/Claude/claude_desktop_config.json` under `"mcpServers"`:
+
+```json
+{
+  "mcpServers": {
+    "apple_mail": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/androidua/apple-mail-mcp", "apple-mail-mcp"]
+    }
+  }
+}
+```
+
+`uvx` fetches the package, resolves its pinned dependencies, and runs the `apple-mail-mcp` console entry point. Restart Claude Desktop after saving. The manual venv setup below remains available as an alternative.
+
 ### 1. Clone the repository
 
 ```bash
