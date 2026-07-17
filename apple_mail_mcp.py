@@ -190,15 +190,31 @@ tell application "Mail"
 end tell
 """
 
-_SCRIPT_LIST_MAILBOXES = """\
+def _script_list_mailboxes(include_counts: bool = False) -> str:
+    """Build the AppleScript to list accounts + mailboxes.
+
+    When *include_counts* is true, each row carries a third field with the
+    mailbox's message count. Counting is O(1) per mailbox for local caches but
+    can be several seconds per large IMAP mailbox, so it is opt-in.
+
+    Python f-string: ``{{}}`` → ``{}`` (empty AppleScript list literal).
+    """
+    if include_counts:
+        append_line = (
+            "set end of rows to acctName & fs & (name of aMailbox) "
+            "& fs & ((count of messages of aMailbox) as string)"
+        )
+    else:
+        append_line = "set end of rows to acctName & fs & (name of aMailbox)"
+    return f"""\
 tell application "Mail"
     set fs to (ASCII character 31)
     set rs to (ASCII character 30)
-    set rows to {}
+    set rows to {{}}
     repeat with anAccount in every account
         set acctName to name of anAccount
         repeat with aMailbox in every mailbox of anAccount
-            set end of rows to acctName & fs & (name of aMailbox)
+            {append_line}
         end repeat
     end repeat
     if (count of rows) is 0 then return ""
@@ -492,6 +508,14 @@ class ListMailboxesInput(BaseModel):
         description="Output format: 'markdown' (default, human-readable) or 'json' (machine-readable).",
         pattern=r"^(markdown|json)$",
     )
+    include_counts: bool = Field(
+        default=False,
+        description=(
+            "Include per-mailbox message counts. Helps choose search scope "
+            "(a 10k-message mailbox scans in ~10-20s; a 30-message one is instant). "
+            "Adds a few seconds on many-mailbox setups."
+        ),
+    )
 
 
 class SearchEmailsInput(BaseModel):
@@ -634,6 +658,8 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
     Args:
         params (ListMailboxesInput): Input containing:
             - response_format (str): 'markdown' (default) or 'json'.
+            - include_counts (bool): Add per-mailbox message counts to help
+              choose search scope. Slower on many-mailbox setups. Default false.
 
     Returns:
         str: Formatted list of all accounts and their mailboxes.
@@ -661,7 +687,10 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
         no configured accounts. Prompts the user to open Mail.app if needed.
     """
     try:
-        raw = await _run_applescript(_SCRIPT_LIST_MAILBOXES)
+        raw = await _run_applescript(
+            _script_list_mailboxes(params.include_counts),
+            timeout=120.0 if params.include_counts else 60.0,
+        )
     except RuntimeError as exc:
         return f"Error accessing Apple Mail: {exc}"
 
@@ -671,11 +700,14 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
             "Make sure Apple Mail is open and at least one account is configured."
         )
 
-    records: list[dict[str, str]] = []
+    records: list[dict] = []
     for row in raw.split(_ROW_SEP):
-        parts = row.split(_FIELD_SEP, 1)
-        if len(parts) == 2 and any(p.strip() for p in parts):
-            records.append({"account": parts[0], "mailbox": parts[1]})
+        parts = row.split(_FIELD_SEP)
+        if len(parts) >= 2 and any(p.strip() for p in parts):
+            rec: dict = {"account": parts[0], "mailbox": parts[1]}
+            if len(parts) >= 3:
+                rec["message_count"] = int(parts[2]) if parts[2].isdigit() else None
+            records.append(rec)
 
     if not records:
         return "No mailboxes found."
@@ -689,7 +721,11 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
         if rec["account"] != current_account:
             current_account = rec["account"]
             lines.append(f"## {current_account}")
-        lines.append(f"- {rec['mailbox']}")
+        count = rec.get("message_count")
+        if count is not None:
+            lines.append(f"- {rec['mailbox']} ({count:,} messages)")
+        else:
+            lines.append(f"- {rec['mailbox']}")
 
     lines.append("")
     account_count = len({r["account"] for r in records})
