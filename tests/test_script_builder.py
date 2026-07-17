@@ -22,3 +22,16 @@ def test_per_mailbox_cap_variable():
     s = _script_search_emails("kw", 33)
     assert "set perMailboxCap to 33" in s
     assert "resultCount" not in s  # old per-account counter must be gone
+
+def test_before_days_predicate():
+    s = _script_search_emails("kw", 20, since_days=90, before_days=30)
+    assert "(date received <= ((current date) - (30 * days)))" in s
+    assert "(date received >= ((current date) - (90 * days)))" in s
+
+def test_before_days_requires_since_days_validator():
+    import pytest
+    from apple_mail_mcp import SearchEmailsInput
+    with pytest.raises(ValueError):
+        SearchEmailsInput(keyword="x", before_days=10, since_days=None)
+    with pytest.raises(ValueError):
+        SearchEmailsInput(since_days=7, before_days=30)  # must be < since_days

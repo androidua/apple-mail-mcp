@@ -217,6 +217,7 @@ def _script_search_emails(
     mailbox_safe: str = "",
     since_days: Optional[int] = None,
     include_all: bool = False,
+    before_days: Optional[int] = None,
 ) -> str:
     """Build the AppleScript for searching emails.
 
@@ -254,6 +255,10 @@ def _script_search_emails(
     if since_days is not None:
         predicates.append(
             f"(date received >= ((current date) - ({int(since_days)} * days)))"
+        )
+    if before_days is not None:
+        predicates.append(
+            f"(date received <= ((current date) - ({int(before_days)} * days)))"
         )
     if predicates:
         msg_filter = f"(messages of aMailbox whose {' and '.join(predicates)})"
@@ -499,6 +504,16 @@ class SearchEmailsInput(BaseModel):
         ge=1,
         le=365,
     )
+    before_days: Optional[int] = Field(
+        default=None,
+        description=(
+            "Exclude emails newer than N days ago — combine with since_days to "
+            "search a window, e.g. since_days=90, before_days=30 = 30-90 days ago. "
+            "Lets you widen a search without re-fetching already-seen results."
+        ),
+        ge=1,
+        le=365,
+    )
     limit: int = Field(
         default=20,
         description="Maximum number of results to return (1–100). Default: 20.",
@@ -552,6 +567,13 @@ class SearchEmailsInput(BaseModel):
                 "Provide at least one of: keyword (search term) or "
                 "since_days (e.g. 7 for the last week)."
             )
+        if self.before_days is not None:
+            if self.since_days is None:
+                raise ValueError(
+                    "before_days requires since_days (the window's far edge)."
+                )
+            if self.before_days >= self.since_days:
+                raise ValueError("before_days must be smaller than since_days.")
         return self
 
 
@@ -747,9 +769,12 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
     if params.keyword:
         _filter_parts.append(f'"{params.keyword}"')
     if params.since_days:
-        _filter_parts.append(
-            f"last {params.since_days} day{'s' if params.since_days != 1 else ''}"
-        )
+        if params.before_days:
+            _filter_parts.append(f"{params.before_days}–{params.since_days} days ago")
+        else:
+            _filter_parts.append(
+                f"last {params.since_days} day{'s' if params.since_days != 1 else ''}"
+            )
     _filter_desc = " · ".join(_filter_parts) if _filter_parts else "all mail"
 
     # ── Execution strategy ────────────────────────────────────────────────────
@@ -764,7 +789,7 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         account_safe = _sanitize_for_applescript(params.account)
         script = _script_search_emails(
             keyword_safe, params.limit, account_safe, mailbox_safe,
-            params.since_days, params.include_all_mailboxes,
+            params.since_days, params.include_all_mailboxes, params.before_days,
         )
         try:
             raw_outputs = [await _run_applescript(script, timeout=60.0)]
@@ -788,7 +813,7 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             safe = _sanitize_for_applescript(acct_name)
             s = _script_search_emails(
                 keyword_safe, params.limit, safe, mailbox_safe,
-                params.since_days, params.include_all_mailboxes,
+                params.since_days, params.include_all_mailboxes, params.before_days,
             )
             # 45 s per-account timeout — generous enough for large IMAP mailboxes
             # but bounded so one slow account cannot stall the whole response.
