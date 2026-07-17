@@ -763,7 +763,8 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         # Single-account path — simple, fast.
         account_safe = _sanitize_for_applescript(params.account)
         script = _script_search_emails(
-            keyword_safe, params.limit, account_safe, mailbox_safe, params.since_days
+            keyword_safe, params.limit, account_safe, mailbox_safe,
+            params.since_days, params.include_all_mailboxes,
         )
         try:
             raw_outputs = [await _run_applescript(script, timeout=60.0)]
@@ -786,7 +787,8 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         async def _search_one_account(acct_name: str) -> str:
             safe = _sanitize_for_applescript(acct_name)
             s = _script_search_emails(
-                keyword_safe, params.limit, safe, mailbox_safe, params.since_days
+                keyword_safe, params.limit, safe, mailbox_safe,
+                params.since_days, params.include_all_mailboxes,
             )
             # 45 s per-account timeout — generous enough for large IMAP mailboxes
             # but bounded so one slow account cannot stall the whole response.
@@ -805,45 +807,32 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             elif outcome:
                 raw_outputs.append(outcome)
 
-    # ── Parse rows from all collected outputs ─────────────────────────────────
+    # ── Parse, merge (dedup + sort newest-first), truncate ────────────────────
+    # Every mailbox contributed up to `limit` newest matches; the global
+    # top-`limit` is a subset of those, so parse → merge → truncate is exact.
+    parsed_rows, skipped = _parse_search_rows(raw_outputs)
+    merged = _merge_results(parsed_rows, params.limit)
+
     results: list[dict] = []
-    skipped = 0
-    for raw in raw_outputs:
-        for row in raw.split(_ROW_SEP):
-            if len(results) >= params.limit:
-                break
-            parts = row.split(_FIELD_SEP)
-            if len(parts) < 7:
-                skipped += 1
-                continue
-            # Parse fixed-position fields from both ends so a \x1f byte in a
-            # subject does not shift the trailing columns.
-            account  = parts[0]
-            mailbox  = parts[1]
-            msg_id   = parts[2]
-            is_read_str = parts[-1]
-            date_str    = parts[-2]
-            sender      = parts[-3]
-            subject     = _FIELD_SEP.join(parts[3:-3])
-            if not account.strip() and not mailbox.strip():
-                skipped += 1
-                continue
-            try:
-                email_ref = _encode_email_ref(account, mailbox, msg_id)
-            except Exception:
-                skipped += 1
-                continue
-            results.append(
-                {
-                    "email_id": email_ref,
-                    "account":  account,
-                    "mailbox":  mailbox,
-                    "subject":  subject,
-                    "sender":   sender,
-                    "date":     date_str,
-                    "read":     is_read_str.strip().lower() == "true",
-                }
+    for row in merged:
+        try:
+            email_ref = _encode_email_ref(
+                row["account"], row["mailbox"], row["message_id"]
             )
+        except Exception:
+            skipped += 1
+            continue
+        results.append(
+            {
+                "email_id": email_ref,
+                "account":  row["account"],
+                "mailbox":  row["mailbox"],
+                "subject":  row["subject"],
+                "sender":   row["sender"],
+                "date":     row["date"],
+                "read":     row["read"],
+            }
+        )
 
     if not results and not timed_out:
         return f"No emails found ({_filter_desc})."
@@ -868,6 +857,12 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             f"   - ID: `{r['email_id']}`",
             "",
         ]
+    accounts_in_results = len({r["account"] for r in results})
+    if accounts_in_results:
+        lines.append(
+            f"*Results merged from {accounts_in_results} account(s), "
+            "sorted newest-first, duplicates removed.*"
+        )
     if timed_out:
         lines.append(
             f"*⚠ The following account(s) did not respond in time and were skipped: "
