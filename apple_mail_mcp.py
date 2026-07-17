@@ -377,6 +377,52 @@ end tell
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Result parsing / merging (pure — unit-tested without live Mail)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_search_rows(raw_outputs: list[str]) -> tuple[list[dict], int]:
+    """Parse delimited AppleScript search output into row dicts.
+
+    Row format (8 fields): account, mailbox, message_id, subject, sender,
+    date_string, read, epoch_rel. Fields are parsed from both ends so a
+    stray \\x1f inside a subject cannot shift the trailing columns:
+    account/mailbox/message_id are fixed at the front, and sender/date/
+    read/epoch are fixed at the back, leaving subject = parts[3:-4].
+    Returns (rows, skipped_count).
+    """
+    rows: list[dict] = []
+    skipped = 0
+    for raw in raw_outputs:
+        for row in raw.split(_ROW_SEP):
+            if not row.strip():
+                continue
+            parts = row.split(_FIELD_SEP)
+            if len(parts) < 8:
+                skipped += 1
+                continue
+            account, mailbox, msg_id = parts[0], parts[1], parts[2]
+            try:
+                epoch_rel = int(float(parts[-1]))
+            except ValueError:
+                epoch_rel = 0
+            rows.append({
+                "account": account,
+                "mailbox": mailbox,
+                "message_id": msg_id,
+                "subject": _FIELD_SEP.join(parts[3:-4]),
+                "sender": parts[-4],
+                "date": parts[-3],
+                "read": parts[-2].strip().lower() == "true",
+                "epoch_rel": epoch_rel,
+            })
+            if not account.strip() and not mailbox.strip():
+                rows.pop()
+                skipped += 1
+    return rows, skipped
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pydantic input models
 # ──────────────────────────────────────────────────────────────────────────────
 
