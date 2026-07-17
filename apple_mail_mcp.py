@@ -769,9 +769,10 @@ async def mail_list_mailboxes(params: ListMailboxesInput) -> str:
 async def mail_search_emails(params: SearchEmailsInput) -> str:
     """Search Apple Mail for emails by keyword and/or date range.
 
-    Searches across all configured accounts in parallel. System mailboxes
-    (Trash, Junk, Spam) are excluded by default. Returns matching emails
-    with opaque email_id values for use with mail_read_email.
+    Searches across all configured accounts in parallel, then merges,
+    deduplicates and sorts the results newest-first. System/junk/duplicate-view
+    mailboxes are excluded by default (see include_all_mailboxes). Returns
+    matching emails with opaque email_id values for use with mail_read_email.
 
     IMPORTANT — date range strategy (always follow this order):
         Large date windows (since_days > 90) are slow on big IMAP accounts
@@ -785,6 +786,9 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
         Never jump straight to since_days=365 for vague queries like
         "recent emails" or "last few emails". Start with 7 days.
 
+        To page further back, keep since_days and add before_days instead of
+        re-reading overlapping results.
+
     Args:
         params (SearchEmailsInput): Input containing:
             - keyword (str): Optional search term matched against subject and
@@ -794,13 +798,24 @@ async def mail_search_emails(params: SearchEmailsInput) -> str:
             - limit (int): Max results to return (default 20, max 100).
             - account (str): Optional. Restrict to one account (e.g. 'iCloud').
             - mailbox_name (str): Optional. Restrict to one mailbox (e.g. 'INBOX').
+            - before_days (int): Optional. Exclude emails newer than N days ago;
+              combine with since_days to page an older window (e.g. since_days=90,
+              before_days=30 → 30–90 days ago) without re-fetching newer results.
+            - include_all_mailboxes (bool): Optional. Also search normally-skipped
+              mailboxes (Trash, Junk/Spam/Bulk, Deleted Items, Gmail All Mail/
+              Important/Starred, Outbox). Default false.
             - response_format (str): 'markdown' (default) or 'json'.
 
         At least one of keyword or since_days must be provided.
 
     Returns:
-        str: Matching emails with subject, sender, date, read-status, email_id.
-        Timed-out accounts are listed as a warning (not a crash).
+        str: Results are merged across accounts, deduplicated by message id
+        (Gmail label copies collapse to one), and sorted newest-first.
+        System/junk/duplicate-view mailboxes (Trash, Deleted Items,
+        Junk/Spam/Bulk, Gmail All Mail/Important/Starred, Outbox) are skipped
+        unless include_all_mailboxes=true. Each result carries subject, sender,
+        date, read-status and an opaque email_id. Timed-out accounts are listed
+        as a warning (not a crash).
 
         Markdown example:
             # Search Results: "invoice" · last 30 days

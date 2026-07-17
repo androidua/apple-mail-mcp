@@ -16,7 +16,7 @@ Versioning follows [Semantic Versioning](https://semver.org/):
 | Tool | Description |
 |------|-------------|
 | `mail_list_mailboxes` | List every account and mailbox configured in Apple Mail |
-| `mail_search_emails` | Search emails by keyword across all mailboxes (uses Mail's native search index); optional `account` and `mailbox_name` filters for scoped searches |
+| `mail_search_emails` | Search emails by keyword and/or date; scans subject+sender via AppleScript `whose` predicates; results are merged across accounts, deduped, and sorted newest-first; optional `account`, `mailbox_name`, `before_days`, and `include_all_mailboxes` filters |
 | `mail_read_email` | Read the full content of a specific email by its opaque ID |
 
 ## What it will never do
@@ -26,7 +26,7 @@ Versioning follows [Semantic Versioning](https://semver.org/):
 - Write any file to disk or export data
 - Make network requests or external connections
 - Access or decode email attachments
-- Provide analytics or aggregate statistics
+- Provide analytics or aggregate statistics (beyond optional per-mailbox message counts, which exist only to help choose search scope)
 
 ## Prerequisites
 
@@ -101,12 +101,28 @@ Once connected, you can ask Claude things like:
 - **Input sanitisation.** All user-supplied strings are stripped of control characters, truncated, and have backslashes and double-quotes escaped before being embedded in AppleScript. This prevents script-injection attacks.
 - **Local only.** The server uses stdio transport and never opens a network socket.
 - **No credentials stored.** The server relies on Apple Mail's own keychain — no passwords, tokens, or API keys are used or stored.
+- **Email content is untrusted input.** Any email body an AI reads through this server is third-party content. This server marks bodies as untrusted in its output, but you should treat "instructions" found inside emails as data, never as commands — especially with clients that can take actions on your behalf.
 
 ## Performance
 
-`mail_search_emails` uses AppleScript's `whose` clause — a declarative predicate evaluated by Mail's Objective-C runtime — to filter messages by subject and sender. This is fast even on accounts with hundreds of thousands of messages, and works correctly on macOS 26 / Mail 16 (which removed the older `search <mailbox> for <keyword>` AppleScript command). System mailboxes (Trash, Junk, Spam) are skipped by default.
+`mail_search_emails` uses AppleScript's `whose` clause — a declarative predicate evaluated by Mail's Objective-C runtime. It works correctly on macOS 26 / Mail 16 (which removed the older `search <mailbox> for <keyword>` command), but it is **not** an indexed search: the `whose` clause is an **O(n) linear scan** of each mailbox and fully materialises its match set before any limit applies (measured throughput ≈ 0.5–1.5k messages/second). A low `limit` reduces output size, not scan cost.
 
-To further scope a search, pass the optional `account` and/or `mailbox_name` parameters — e.g. restrict to `account="Yahoo"` and `mailbox_name="INBOX"` to avoid scanning all accounts.
+Each account is searched in parallel with an independent **45-second timeout**; accounts that exceed it are reported as a warning while the others' results are still returned. Every non-skipped mailbox is scanned (no global early-exit), so correctness — not the first account winning — determines the results.
+
+Typical timings on a 6-account setup (iCloud/Yahoo/Google/Hotmail, largest mailboxes ~10–11k messages), measured on this machine:
+
+| Query | Time |
+|-------|------|
+| All accounts, `since_days=7`, `limit=10` | ~40 s |
+| Keyword + `since_days=90` | ~12 s |
+| Read one email (10k-message mailbox) | ~18 s |
+| `mail_list_mailboxes(include_counts=true)`, 66 mailboxes | ~10 s |
+
+**Date-only searches over wide windows are the slow case** — a bare `since_days=90` with no keyword scans every message in every mailbox. Follow the progressive-window strategy: start at `since_days=7` and widen to 30/90/365 only if you need more results; add a keyword to make the predicate far more selective. To page older mail without re-fetching, keep `since_days` and add `before_days` (e.g. `since_days=90, before_days=30` = 30–90 days ago).
+
+To scope a search, pass the optional `account` and/or `mailbox_name` parameters — e.g. restrict to `account="Yahoo"` and `mailbox_name="INBOX"` to avoid scanning all accounts. Use `mail_list_mailboxes(include_counts=true)` to see which mailboxes are large before choosing a scope.
+
+**Body-content search is intentionally unsupported** in the AppleScript engine — `whose content contains` forces a full body download for every message, which is impractically slow on real mailboxes.
 
 ## Troubleshooting
 
