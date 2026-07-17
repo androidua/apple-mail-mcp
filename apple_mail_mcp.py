@@ -216,6 +216,7 @@ def _script_search_emails(
     account_safe: str = "",
     mailbox_safe: str = "",
     since_days: Optional[int] = None,
+    include_all: bool = False,
 ) -> str:
     """Build the AppleScript for searching emails.
 
@@ -223,20 +224,26 @@ def _script_search_emails(
     evaluated by Mail's Objective-C runtime, which avoids N bridge roundtrips,
     but is still a linear scan — O(n) per mailbox at the ObjC layer.
 
-    Note: the ``whose`` clause fully materialises the match list before the
-    Python-side ``limit`` early-exit takes effect. A low *limit* reduces output
-    size but does not reduce the scan cost for common keywords.
-
-    Supports three filter modes (combinable):
-    - *keyword_safe*: match subject or sender (case-insensitive)
-    - *since_days*: match messages received within the last N days;
-      uses AppleScript's built-in ``days`` unit constant so no shell is needed
+    Design notes
+    ------------
+    * **Per-mailbox cap** (was per-account): every mailbox contributes up to
+      *limit* newest matches. Any message in the true global top-*limit* is
+      necessarily within the newest *limit* of its own mailbox, so per-mailbox
+      collection + a global Python-side sort is exactly correct. The old
+      per-account counter (``resultCount``) is gone — it caused the first
+      responding account to fill the whole result list (bug B1).
+    * **Sortable timestamp** ``(date received) - refDate`` where ``refDate`` is
+      captured once at script start. This is a small negative integer (≥ -31.5M
+      for 365 days) — it avoids AppleScript's 32-bit / scientific-notation
+      hazards with absolute epochs and needs no GMT correction. Cross-account
+      skew is at most a few seconds, affecting only the order of same-second
+      messages.
+    * **Skip list** matches real-world mailbox names across iCloud/Yahoo/Gmail/
+      Hotmail (junk/trash/bulk variants + Gmail duplicate-view mailboxes).
+      ``include_all`` opts back in to everything.
 
     *keyword_safe*, *account_safe*, and *mailbox_safe* must already have been
     processed by ``_sanitize_for_applescript``.
-
-    When *mailbox_safe* is empty, system mailboxes (Trash, Junk, etc.) are
-    excluded automatically.
 
     Python f-string: ``{{}}`` → ``{}``  (empty AppleScript list literal).
     """
@@ -254,44 +261,47 @@ def _script_search_emails(
         # No filter: browse all messages up to the limit.
         msg_filter = "every message of aMailbox"
 
+    include_all_lit = "true" if include_all else "false"
     return f"""\
 tell application "Mail"
     set fs to (ASCII character 31)
     set rs to (ASCII character 30)
     set kw to "{keyword_safe}"
-    set maxResults to {limit}
+    set perMailboxCap to {limit}
     set filterAccount to "{account_safe}"
     set filterMailbox to "{mailbox_safe}"
-    set skipNames to {{"Trash", "Deleted Messages", "Junk", "Spam", "Bulk Mail", "Junk E-mail"}}
+    set includeAll to {include_all_lit}
+    set skipNames to {{"Trash", "Deleted Messages", "Deleted Items", "Junk", "Junk Email", "Junk E-mail", "Spam", "Bulk Mail", "Bulk", "All Mail", "[Gmail]All Mail", "Important", "Starred", "Outbox"}}
+    set refDate to (current date)
     set rows to {{}}
-    set resultCount to 0
     repeat with anAccount in every account
-        if resultCount >= maxResults then exit repeat
         set acctName to name of anAccount
         if filterAccount is "" or acctName is filterAccount then
             repeat with aMailbox in every mailbox of anAccount
-                if resultCount >= maxResults then exit repeat
                 set mbxName to name of aMailbox
                 set shouldSkip to false
                 if filterMailbox is not "" then
                     if mbxName is not filterMailbox then set shouldSkip to true
                 else
-                    if skipNames contains mbxName then set shouldSkip to true
+                    if (not includeAll) and (skipNames contains mbxName) then set shouldSkip to true
                 end if
                 if not shouldSkip then
+                    set mbxCount to 0
                     try
                         set matchedMsgs to {msg_filter}
                         repeat with aMsg in matchedMsgs
-                            if resultCount >= maxResults then exit repeat
+                            if mbxCount >= perMailboxCap then exit repeat
                             try
                                 set msgId to message id of aMsg
                                 set msgSubj to subject of aMsg
                                 set msgFrom to sender of aMsg
-                                set msgDate to (date received of aMsg) as string
+                                set d to date received of aMsg
+                                set msgDate to d as string
+                                set msgEpoch to ((d - refDate) as string)
                                 set isReadStr to "false"
                                 if read status of aMsg then set isReadStr to "true"
-                                set end of rows to acctName & fs & mbxName & fs & msgId & fs & msgSubj & fs & msgFrom & fs & msgDate & fs & isReadStr
-                                set resultCount to resultCount + 1
+                                set end of rows to acctName & fs & mbxName & fs & msgId & fs & msgSubj & fs & msgFrom & fs & msgDate & fs & isReadStr & fs & msgEpoch
+                                set mbxCount to mbxCount + 1
                             end try
                         end repeat
                     end try
@@ -513,6 +523,14 @@ class SearchEmailsInput(BaseModel):
             "Use with 'account' to target a specific mailbox precisely."
         ),
         max_length=200,
+    )
+    include_all_mailboxes: bool = Field(
+        default=False,
+        description=(
+            "Set true to also search normally-skipped mailboxes "
+            "(Trash, Junk/Spam/Bulk, Deleted Items, Gmail All Mail/Important/Starred, Outbox). "
+            "Default false."
+        ),
     )
     response_format: str = Field(
         default="markdown",
