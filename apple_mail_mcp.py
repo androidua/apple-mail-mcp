@@ -58,7 +58,23 @@ _CTRL_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 # MCP server initialisation
 # ──────────────────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("apple_mail_mcp")
+mcp = FastMCP(
+    "apple_mail_mcp",
+    instructions=(
+        f"Apple Mail MCP v{VERSION} — read-only search/read for Apple Mail. "
+        "Search results are merged across accounts, deduplicated, and sorted "
+        "newest-first; junk/trash/Gmail-duplicate mailboxes are skipped unless "
+        "include_all_mailboxes=true. Start with since_days=7 and widen to "
+        "30/90/365 only if too few results (large windows are slow). Use "
+        "before_days to page older windows without re-fetching. Expect ~10-30s "
+        "per search and up to ~60s per read on large mailboxes."
+    ),
+)
+# FastMCP has no version kwarg; serverInfo otherwise reports the SDK version.
+try:
+    mcp._mcp_server.version = VERSION  # private API — guarded on purpose
+except Exception:
+    pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Input sanitisation
