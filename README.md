@@ -4,7 +4,7 @@ A minimal, **read-only** MCP (Model Context Protocol) server that lets Claude De
 
 ## Version
 
-Current: **1.2.1**
+Current: **1.3.0**
 
 Versioning follows [Semantic Versioning](https://semver.org/):
 - **MAJOR** — breaking changes to the tool API or behaviour
@@ -161,6 +161,15 @@ apple-mail-mcp/
 ```
 
 ## Changelog
+
+### 1.3.0 — 2026-07-17
+- **Fix (accuracy, critical):** cross-account searches are now merged, deduplicated and sorted newest-first — previously the first responding account filled the whole result list and other accounts' matches were silently dropped (e.g. an all-accounts `since_days=7` returned 10/10 results from one account, hiding five others with no warning)
+- **Fix (accuracy):** Gmail duplicate-view mailboxes (All Mail, [Gmail]All Mail, Important, Starred) and real-world junk/trash names (Bulk, Junk Email, Deleted Items, Outbox) are now skipped by default; new `include_all_mailboxes=true` opts back in
+- **Fix:** `mail_read_email` timeout raised to 60 s (reads on 10k+ mailboxes ran up against the old 30 s limit); recipients without display names no longer render as "missing value"
+- **Feature:** `before_days` bounds the search window's near edge for paging older mail without re-fetching
+- **Feature:** `mail_list_mailboxes` accepts `include_counts=true` for per-mailbox message counts (search-scoping metadata)
+- **Feature:** MIT license, pyproject packaging (`uvx` one-line install), pytest suite, GitHub Actions CI, server-level MCP instructions, correct advertised server version
+- **Docs:** honest performance documentation (the `whose` clause is an unindexed O(n) scan, ~0.5–1.5k msgs/sec); prompt-injection warning for email content
 
 ### 1.2.1 — 2026-03-25
 - **Fix (critical):** remove `proc.stdout.close()` / `proc.stderr.close()` — `asyncio.StreamReader` has no `.close()` method; calling it on timeout caused `AttributeError` that crashed the tool and surfaced as the "StreamReader object has no attribute 'close'" error users saw for slow IMAP accounts

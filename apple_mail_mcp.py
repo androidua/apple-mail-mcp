@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Mail MCP Server  v1.2.1
+Apple Mail MCP Server  v1.3.0
 ==============================
 
 CAN DO:
@@ -15,7 +15,8 @@ CANNOT DO (hard limits — not configurable):
   • Write files, export data, or save anything to disk
   • Make network requests, HTTP calls, or connect to any external service
   • Access, extract, or decode email attachments
-  • Provide analytics, statistics, or aggregate counts
+  • Provide analytics or aggregate statistics (per-mailbox message counts are
+    available only as optional search-scoping metadata)
   • Modify Apple Mail preferences, rules, or account settings
 
 Transport:  stdio (local subprocess only — no network listener)
@@ -38,7 +39,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator, ConfigD
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 # ASCII control characters used as delimiters in AppleScript output.
 # Chosen because they are semantically correct (ASCII RS/US) and virtually
