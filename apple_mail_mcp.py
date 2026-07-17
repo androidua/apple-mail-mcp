@@ -422,6 +422,36 @@ def _parse_search_rows(raw_outputs: list[str]) -> tuple[list[dict], int]:
     return rows, skipped
 
 
+# Mailboxes that mirror the same message already visible in INBOX (Gmail's
+# label model exposes one message through several "mailboxes"). When the same
+# (account, message id) shows up in more than one, prefer the INBOX copy.
+_DUPLICATE_VIEW_MAILBOXES = {
+    "All Mail", "[Gmail]All Mail", "Important", "Starred", "Archive", "Archives",
+}
+
+
+def _mailbox_rank(name: str) -> int:
+    """Preference when the same message appears in several mailboxes."""
+    if name.strip().upper() == "INBOX":
+        return 0
+    if name in _DUPLICATE_VIEW_MAILBOXES:
+        return 2
+    return 1
+
+
+def _merge_results(rows: list[dict], limit: int) -> list[dict]:
+    """Dedup by (account, message_id) keeping the best-ranked mailbox copy,
+    sort newest-first by epoch_rel, truncate to limit."""
+    best: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        key = (row["account"], row["message_id"])
+        cur = best.get(key)
+        if cur is None or _mailbox_rank(row["mailbox"]) < _mailbox_rank(cur["mailbox"]):
+            best[key] = row
+    merged = sorted(best.values(), key=lambda r: r["epoch_rel"], reverse=True)
+    return merged[:limit]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic input models
 # ──────────────────────────────────────────────────────────────────────────────
